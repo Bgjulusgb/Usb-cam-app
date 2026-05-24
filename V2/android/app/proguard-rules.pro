@@ -1,0 +1,5 @@
+-keep class com.arthenica.ffmpegkit.** { *; }
+-keep class com.usbcam.v2.** { *; }
+-keep class com.getcapacitor.** { *; }
+-dontwarn com.arthenica.**
+-dontwarn com.getcapacitor.**
