@@ -6,6 +6,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.core.view.WindowCompat
 import com.getcapacitor.BridgeActivity
 
 class MainActivity : BridgeActivity() {
@@ -15,9 +16,16 @@ class MainActivity : BridgeActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Register the Capacitor plugin BEFORE super.onCreate so the bridge picks it up.
+        // Register our Capacitor plugin BEFORE super.onCreate so the bridge picks it up.
         registerPlugin(UsbCameraPlugin::class.java)
         super.onCreate(savedInstanceState)
+
+        // Android 15 enforces edge-to-edge for apps targeting API 35.
+        // Capacitor 7's BridgeActivity already calls this internally, but we
+        // set it explicitly here so the WebView's env(safe-area-inset-*) values
+        // are populated correctly on all API levels ≥ 23.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
         logUsbAttachIntent(intent)
     }
 
@@ -36,7 +44,7 @@ class MainActivity : BridgeActivity() {
                 "USB attached via intent: VID=0x%04X PID=0x%04X (%s)".format(
                     device.vendorId and 0xFFFF,
                     device.productId and 0xFFFF,
-                    device.deviceName
+                    device.deviceName,
                 )
             )
         }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Allows cleartext HTTP only to localhost (127.0.0.1) where the MJPEG preview
+  server runs. All other traffic uses the platform default (TLS required).
+  This replaces android:usesCleartextTraffic="true" in the manifest, which
+  is deprecated and was too broad.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
