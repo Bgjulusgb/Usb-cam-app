@@ -11,12 +11,13 @@ import java.io.ByteArrayOutputStream
  * Converts raw USB camera frames (MJPEG / YUY2 / NV21) into JPEG bytes for the
  * MJPEG preview server and photo capture, and into Bitmaps for the recorder.
  *
- * Format codes match UvcCameraDevice: 1=MJPEG, 2=YUY2, 3=H264, 4=H265, 5=NV12.
+ * Format codes: 1=MJPEG, 2=YUY2, 5=NV12, 6=NV21 (native UVC backend).
  */
 object FrameConverter {
     const val FORMAT_MJPEG = 1
     const val FORMAT_YUY2 = 2
     const val FORMAT_NV12 = 5
+    const val FORMAT_NV21 = 6
 
     private fun isJpeg(data: ByteArray): Boolean =
         data.size > 3 && data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()
@@ -27,7 +28,8 @@ object FrameConverter {
             when {
                 format == FORMAT_MJPEG || isJpeg(data) -> data
                 format == FORMAT_YUY2 -> yuy2ToJpeg(data, width, height, quality)
-                format == FORMAT_NV12 -> nv21ToJpeg(data, width, height, quality)
+                // The native UVC backend (UVCAndroid) delivers NV21 directly.
+                format == FORMAT_NV21 || format == FORMAT_NV12 -> nv21ToJpeg(data, width, height, quality)
                 else -> if (isJpeg(data)) data else yuy2ToJpeg(data, width, height, quality)
             }
         } catch (_: Exception) {

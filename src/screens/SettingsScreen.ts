@@ -113,14 +113,14 @@ export class SettingsScreen {
           <div class="settings-card">
             <div class="settings-row">
               <div class="settings-label">
-                <span>USB Cam V2</span>
-                <small>Version 2.0.0 · 100% lokal · Kein Tracking</small>
+                <span>USB Cam</span>
+                <small>Version 1.2.0 · Android 16 (API 36) · 100% lokal · Kein Tracking</small>
               </div>
             </div>
             <div class="settings-row">
               <div class="settings-label">
                 <span>Unterstützte Geräte</span>
-                <small>UVC, EasyCap (UTVF007/STK1160/EM2860/SMI2021),<br/>Capture Cards, Endoskope, IR-Kameras</small>
+                <small>UVC-Kameras &amp; HDMI-/Capture-Grabber (nativ, libuvc).<br/>Analoge EasyCap-Sticks (STK1160/SMI2021/EM2860): nur eingeschränkt – siehe README.</small>
               </div>
             </div>
           </div>

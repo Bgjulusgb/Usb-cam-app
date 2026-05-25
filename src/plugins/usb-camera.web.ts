@@ -83,5 +83,9 @@ export class UsbCameraWeb extends WebPlugin implements UsbCameraPluginInterface 
     return { granted: true };
   }
 
+  async requestAppPermissions(): Promise<{ granted: boolean }> {
+    return { granted: true };
+  }
+
   async removeAllListeners(): Promise<void> {}
 }

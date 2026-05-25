@@ -36,6 +36,9 @@ export interface UsbCameraPluginInterface {
   /** Request USB permission for a device */
   requestPermission(options: { deviceKey: string }): Promise<{ granted: boolean }>;
 
+  /** Request runtime app permissions (microphone, notifications & media on Android 13+) */
+  requestAppPermissions(): Promise<{ granted: boolean }>;
+
   /** Add event listener */
   addListener(
     eventName: 'deviceConnected',

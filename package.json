@@ -1,7 +1,7 @@
 {
   "name": "usb-cam-app",
-  "version": "1.1.0",
-  "description": "Android USB Camera App – 100% lokal, kein Cloud, kein Tracking. UVC + EasyCap + Capture Cards via USB-C OTG.",
+  "version": "1.2.0",
+  "description": "Android USB Camera App – 100% lokal, kein Cloud, kein Tracking. UVC + EasyCap + Capture Cards via USB-C OTG. Android 16 / API 36.",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,16 +18,16 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@capacitor/android": "^7.2.0",
-    "@capacitor/core": "^7.2.0",
-    "@capacitor/filesystem": "^7.0.0",
-    "@capacitor/preferences": "^7.0.0",
-    "@capacitor/status-bar": "^7.0.0"
+    "@capacitor/android": "^7.6.5",
+    "@capacitor/core": "^7.6.5",
+    "@capacitor/filesystem": "^7.1.8",
+    "@capacitor/preferences": "^7.0.4",
+    "@capacitor/status-bar": "^7.0.6"
   },
   "devDependencies": {
-    "@capacitor/cli": "^7.2.0",
+    "@capacitor/cli": "^7.6.5",
     "rimraf": "^6.0.1",
-    "typescript": "^5.7.3",
-    "vite": "^6.3.5"
+    "typescript": "^5.9.3",
+    "vite": "^7.3.3"
   }
 }

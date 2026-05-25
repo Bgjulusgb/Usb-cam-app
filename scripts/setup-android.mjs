@@ -9,7 +9,9 @@
  *   - replaces the generated AndroidManifest.xml with our USB-host version
  *   - copies device_filter.xml / file_paths.xml / network_security_config.xml
  *   - enables Kotlin 2.x and adds coroutines in the Gradle files
- *   - enforces compileSdk=35 / targetSdk=35 / minSdk=23 (Android 15 + API 35)
+ *   - adds the native UVC library (libusb/libuvc) for isochronous USB video
+ *   - enforces compileSdk=36 / targetSdk=36 / minSdk=23 (Android 16 + API 36)
+ *   - bumps the Android Gradle Plugin to a version that supports API 36 (AGP 8.9+)
  *
  * Run with:  npm run setup:android
  */
@@ -23,12 +25,20 @@ const NATIVE  = join(ROOT, 'native-android');
 const ANDROID = join(ROOT, 'android');
 const PKG_PATH = 'com/usbcam/app';
 
-// ─── Version constants ────────────────────────────────────────────────────────
-const KOTLIN_VERSION      = '2.0.21';
-const COROUTINES_VERSION  = '1.9.0';
-const COMPILE_SDK         = 35;
-const TARGET_SDK          = 35;
-const MIN_SDK             = 23;
+// ─── Version constants (Android 16 / API 36) ──────────────────────────────────
+const KOTLIN_VERSION      = '2.1.0';
+const COROUTINES_VERSION  = '1.10.1';
+const DESUGAR_VERSION     = '2.1.5';
+const COMPILE_SDK         = 36;
+const TARGET_SDK          = 36;
+const MIN_SDK             = 23;             // UVCAndroid needs ≥21; 23 keeps wide reach
+// Native UVC backend (libusb + libuvc) – handles isochronous USB video that the
+// pure-Java Android USB Host API cannot read. Published on Maven Central.
+const UVC_LIB             = 'com.herohan:UVCAndroid:1.0.12';
+// Android 16 (API 36) requires AGP ≥ 8.9.0; AGP 8.9.x pairs with Gradle 8.11.1
+// (which is what Capacitor 7 already ships).
+const AGP_MIN             = '8.9.1';
+const GRADLE_MIN          = '8.11.1';
 
 function run(cmd) {
   console.log(`\n$ ${cmd}`);
@@ -45,12 +55,15 @@ function copyTree(src, dst) {
   }
 }
 
-function patch(filePath, transforms) {
-  let text = readFileSync(filePath, 'utf8');
-  for (const [search, replace] of transforms) {
-    text = text.replace(search, replace);
+/** Compare dotted versions: returns true when `a` < `b`. */
+function isLower(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0, y = pb[i] ?? 0;
+    if (x !== y) return x < y;
   }
-  writeFileSync(filePath, text);
+  return false;
 }
 
 // ─── 1) Build web assets ──────────────────────────────────────────────────────
@@ -89,7 +102,23 @@ for (const file of ['device_filter.xml', 'file_paths.xml', 'network_security_con
 }
 console.log('✓ res/xml resources copied');
 
-// ─── 6) Patch root build.gradle – Kotlin Gradle plugin ───────────────────────
+// ─── 6) Enforce SDK versions in variables.gradle ─────────────────────────────
+// Capacitor stores compile/target/min SDK in android/variables.gradle (an ext
+// block applied by the root build.gradle), so that's where we patch them.
+const variablesPath = join(ANDROID, 'variables.gradle');
+if (existsSync(variablesPath)) {
+  let vars = readFileSync(variablesPath, 'utf8');
+  vars = vars
+    .replace(/compileSdkVersion\s*=\s*\d+/, `compileSdkVersion = ${COMPILE_SDK}`)
+    .replace(/targetSdkVersion\s*=\s*\d+/,  `targetSdkVersion = ${TARGET_SDK}`)
+    .replace(/minSdkVersion\s*=\s*\d+/,     `minSdkVersion = ${MIN_SDK}`);
+  writeFileSync(variablesPath, vars);
+  console.log(`✓ variables.gradle: SDK set to compile/target ${COMPILE_SDK}, min ${MIN_SDK}`);
+} else {
+  console.warn('! variables.gradle not found – SDK versions will fall back to app/build.gradle patch');
+}
+
+// ─── 7) Patch root build.gradle – Kotlin plugin + AGP version ────────────────
 const rootGradlePath = join(ANDROID, 'build.gradle');
 let rootGradle = readFileSync(rootGradlePath, 'utf8');
 
@@ -100,22 +129,34 @@ if (!rootGradle.includes('kotlin-gradle-plugin')) {
   );
 }
 
-// Enforce compileSdkVersion / targetSdkVersion / minSdkVersion in ext block.
-// Capacitor 7 already sets these to 35/35/23; the replacements below are
-// no-ops if the values are already correct.
+// Bump the Android Gradle Plugin only if the version Capacitor shipped is below
+// the minimum required for API 36 (avoids accidentally downgrading a newer AGP).
+rootGradle = rootGradle.replace(
+  /classpath ['"]com\.android\.tools\.build:gradle:([^'"]+)['"]/,
+  (match, ver) => {
+    if (isLower(ver, AGP_MIN)) {
+      console.log(`✓ AGP ${ver} < ${AGP_MIN} → bumping to ${AGP_MIN} (needed for API 36)`);
+      return `classpath 'com.android.tools.build:gradle:${AGP_MIN}'`;
+    }
+    console.log(`✓ AGP ${ver} already supports API 36 – left unchanged`);
+    return match;
+  },
+);
+
+// Fallback: enforce SDK versions here too if they happen to be inlined.
 rootGradle = rootGradle
   .replace(/compileSdkVersion\s*=\s*\d+/, `compileSdkVersion = ${COMPILE_SDK}`)
   .replace(/targetSdkVersion\s*=\s*\d+/,  `targetSdkVersion = ${TARGET_SDK}`)
   .replace(/minSdkVersion\s*=\s*\d+/,     `minSdkVersion = ${MIN_SDK}`);
 
 writeFileSync(rootGradlePath, rootGradle);
-console.log('✓ Root build.gradle: Kotlin plugin added, SDK versions enforced');
+console.log('✓ Root build.gradle: Kotlin plugin + AGP version ensured');
 
-// ─── 7) Patch app/build.gradle – Kotlin plugin + coroutines ──────────────────
+// ─── 8) Patch app/build.gradle – Kotlin + coroutines + desugar + UVC lib ─────
 const appGradlePath = join(ANDROID, 'app/build.gradle');
 let appGradle = readFileSync(appGradlePath, 'utf8');
 
-if (!appGradle.includes("kotlin-android")) {
+if (!appGradle.includes('kotlin-android')) {
   appGradle = appGradle.replace(
     /apply plugin:\s*['"]com\.android\.application['"]/,
     `apply plugin: 'com.android.application'\napply plugin: 'kotlin-android'`,
@@ -129,14 +170,21 @@ if (!appGradle.includes('kotlinx-coroutines-android')) {
   );
 }
 
-// Enforce compileSdk / targetSdk in the app module as well (handles both
-// the `compileSdkVersion X` and `compileSdk = X` syntaxes).
+// Native UVC backend (isochronous USB video via libusb/libuvc).
+if (!appGradle.includes('UVCAndroid')) {
+  appGradle = appGradle.replace(
+    /dependencies\s*\{/,
+    `dependencies {\n    implementation "${UVC_LIB}"`,
+  );
+}
+
+// Enforce compile/target/min SDK in the app module as a fallback for both the
+// `compileSdkVersion X` and `compileSdk = X` syntaxes (no-op when they use
+// rootProject.ext.* from variables.gradle, which we patched above).
 appGradle = appGradle
   .replace(/compileSdkVersion\s+\d+/, `compileSdkVersion ${COMPILE_SDK}`)
-  .replace(/compileSdk\s+rootProject\.ext\.compileSdkVersion/, `compileSdk ${COMPILE_SDK}`)
-  .replace(/targetSdkVersion\s+rootProject\.ext\.targetSdkVersion/, `targetSdkVersion ${TARGET_SDK}`)
+  .replace(/compileSdk\s*=?\s*\d+/, `compileSdk ${COMPILE_SDK}`)
   .replace(/targetSdkVersion\s+\d+/, `targetSdkVersion ${TARGET_SDK}`)
-  .replace(/minSdkVersion\s+rootProject\.ext\.minSdkVersion/, `minSdkVersion ${MIN_SDK}`)
   .replace(/minSdkVersion\s+\d+/, `minSdkVersion ${MIN_SDK}`);
 
 // Enable core library desugaring (needed for java.time API on API <26, harmless above).
@@ -146,17 +194,34 @@ if (!appGradle.includes('coreLibraryDesugaringEnabled')) {
     `$1    coreLibraryDesugaringEnabled true\n$2`,
   );
 }
-if (!appGradle.includes('desugar_jdk_libs') && !appGradle.includes('coreLibraryDesugaring')) {
+if (!appGradle.includes('desugar_jdk_libs')) {
   appGradle = appGradle.replace(
     /dependencies\s*\{/,
-    `dependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"`,
+    `dependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:${DESUGAR_VERSION}"`,
   );
 }
 
 writeFileSync(appGradlePath, appGradle);
-console.log('✓ app/build.gradle: Kotlin + coroutines + desugar added, SDK versions enforced');
+console.log('✓ app/build.gradle: Kotlin + coroutines + desugar + UVC lib added');
 
-// ─── 8) Ensure gradle.properties has Kotlin JVM target ────────────────────────
+// ─── 9) Ensure Gradle wrapper is new enough for the AGP version ───────────────
+const wrapperPath = join(ANDROID, 'gradle/wrapper/gradle-wrapper.properties');
+if (existsSync(wrapperPath)) {
+  let wrapper = readFileSync(wrapperPath, 'utf8');
+  wrapper = wrapper.replace(
+    /gradle-([\d.]+)-(all|bin)\.zip/,
+    (match, ver, kind) => {
+      if (isLower(ver, GRADLE_MIN)) {
+        console.log(`✓ Gradle ${ver} < ${GRADLE_MIN} → bumping wrapper to ${GRADLE_MIN}`);
+        return `gradle-${GRADLE_MIN}-${kind}.zip`;
+      }
+      return match;
+    },
+  );
+  writeFileSync(wrapperPath, wrapper);
+}
+
+// ─── 10) Ensure gradle.properties has Kotlin JVM target ───────────────────────
 const gradlePropsPath = join(ANDROID, 'gradle.properties');
 if (existsSync(gradlePropsPath)) {
   let props = readFileSync(gradlePropsPath, 'utf8');
@@ -170,7 +235,7 @@ if (existsSync(gradlePropsPath)) {
 run('npm run sync');
 
 console.log('\n────────────────────────────────────────────────────────────');
-console.log(' Android project ready (API 35 / Android 15, Kotlin 2.0)');
+console.log(' Android project ready (API 36 / Android 16, Kotlin 2.1, native UVC)');
 console.log(' Debug APK:       npm run apk:debug');
 console.log(' Release APK:     npm run apk:release');
 console.log(' Release AAB:     npm run bundle:aab');

@@ -53,6 +53,11 @@ export class App {
     this.renderApp();
     this.navigateTo('home');
     this.refreshDevices();
+
+    // Ask for runtime permissions (mic / notifications / media on Android 13+)
+    // without blocking first paint; the system dialog waits for the user.
+    // USB device permission is requested separately when a device is connected.
+    void this.cameraService.requestAppPermissions().catch(() => false);
   }
 
   // ─── Camera event listeners ──────────────────────────────────────────────

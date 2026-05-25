@@ -73,4 +73,9 @@ export class UsbCameraService {
     const { granted } = await UsbCameraPlugin.requestPermission({ deviceKey });
     return granted;
   }
+
+  async requestAppPermissions(): Promise<boolean> {
+    const { granted } = await UsbCameraPlugin.requestAppPermissions();
+    return granted;
+  }
 }
