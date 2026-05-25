@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'USB Cam',
   webDir: 'dist',
   // Keep http scheme so the WebView can reach http://localhost:8080/stream (MJPEG).
-  // Android 15 still allows cleartext to 127.0.0.1 by default; we declare it
+  // Android 16 still allows cleartext to 127.0.0.1 by default; we declare it
   // explicitly here and in the network_security_config.xml for clarity.
   server: {
     androidScheme: 'http',
@@ -19,7 +19,7 @@ const config: CapacitorConfig = {
     },
   },
   plugins: {
-    // overlaysWebView=true is required for Android 15's enforced edge-to-edge mode.
+    // overlaysWebView=true is required for Android 15+/16's enforced edge-to-edge mode.
     // The web layer fills the entire screen; safe-area insets (status bar height,
     // navigation bar height) are injected as CSS env() variables via Capacitor's
     // window-insets bridge and consumed in app.css.

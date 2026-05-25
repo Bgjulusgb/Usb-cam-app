@@ -3,8 +3,11 @@ package com.usbcam.app
 import android.Manifest
 import android.graphics.BitmapFactory
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.getcapacitor.JSObject
+import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
@@ -17,7 +20,7 @@ import com.usbcam.app.camera.VideoRecorder
 import com.usbcam.app.usb.EasyCapDevice
 import com.usbcam.app.usb.UsbDeviceInfo
 import com.usbcam.app.usb.UsbDeviceManager
-import com.usbcam.app.usb.UvcCameraDevice
+import com.usbcam.app.usb.UvcNativeCamera
 import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
@@ -26,6 +29,7 @@ import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 @CapacitorPlugin(
     name = "UsbCamera",
@@ -39,9 +43,12 @@ import java.util.Locale
 class UsbCameraPlugin : Plugin() {
     private val TAG = "UsbCameraPlugin"
     private val PREVIEW_PORT = 8080
+    private val OPEN_TIMEOUT_MS = 12_000L
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var deviceManager: UsbDeviceManager
-    private var uvc: UvcCameraDevice? = null
+    private var uvcNative: UvcNativeCamera? = null
     private var easyCap: EasyCapDevice? = null
     private var activeKey: String? = null
 
@@ -93,21 +100,71 @@ class UsbCameraPlugin : Plugin() {
             ?: return call.reject("Device not found")
 
         cleanupDevice()
-        val conn = deviceManager.openDevice(info.device) ?: return call.reject("Cannot open device")
         activeKey = key
 
-        val ok = if (!info.isUvc) {
-            val profile = info.profile ?: return call.reject("No profile for non-UVC device")
-            EasyCapDevice(info.device, conn, profile).also {
-                it.frameCallback = ::onFrame; easyCap = it
-            }.init()
+        if (info.isUvc) {
+            openUvcNative(info, call)
         } else {
-            UvcCameraDevice(info.device, conn, info.profile).also {
-                it.frameCallback = ::onFrame; uvc = it
-            }.init()
+            openEasyCap(info, call)
         }
-        if (ok) call.resolve(JSObject().put("success", true))
-        else { cleanupDevice(); call.reject("Failed to initialize device") }
+    }
+
+    /** UVC devices stream through the native libusb/libuvc backend. */
+    private fun openUvcNative(info: UsbDeviceInfo, call: PluginCall) {
+        val cam = UvcNativeCamera().also { it.onNv21Frame = ::onNativeFrame }
+        uvcNative = cam
+
+        val resolved = AtomicBoolean(false)
+        val timeout = Runnable {
+            if (resolved.compareAndSet(false, true)) {
+                cleanupDevice()
+                notifyError("Zeitüberschreitung beim Öffnen der USB-Kamera")
+                call.reject("Timeout opening camera")
+            }
+        }
+        mainHandler.postDelayed(timeout, OPEN_TIMEOUT_MS)
+
+        // CameraHelper requires main-thread interaction.
+        activity.runOnUiThread {
+            cam.open(info.device) { ok, err ->
+                if (!resolved.compareAndSet(false, true)) return@open
+                mainHandler.removeCallbacks(timeout)
+                if (ok) {
+                    call.resolve(JSObject().put("success", true))
+                } else {
+                    cleanupDevice()
+                    val msg = err ?: "Kamera konnte nicht geöffnet werden"
+                    notifyError(msg)
+                    call.reject(msg)
+                }
+            }
+        }
+    }
+
+    /** Non-UVC analog EasyCap path (best-effort; see note in README). */
+    private fun openEasyCap(info: UsbDeviceInfo, call: PluginCall) {
+        val profile = info.profile ?: run {
+            cleanupDevice(); return call.reject("No profile for non-UVC device")
+        }
+        // Honest expectation management: raw analog bridges (STK1160/SMI2021/
+        // EM2860) are not UVC devices and usually need a kernel-level driver, so
+        // they may not produce an image on a non-rooted phone.
+        notifyError(
+            "Hinweis: „${profile.name}“ ist ein analoger Stick (kein UVC). " +
+            "Auf Android ohne Root liefert er oft kein Bild."
+        )
+        val conn = deviceManager.openDevice(info.device) ?: run {
+            cleanupDevice(); return call.reject("Cannot open device")
+        }
+        val dev = EasyCapDevice(info.device, conn, profile).also {
+            it.frameCallback = ::onFrame; easyCap = it
+        }
+        if (dev.init()) {
+            call.resolve(JSObject().put("success", true))
+        } else {
+            cleanupDevice()
+            call.reject("Failed to initialize device")
+        }
     }
 
     // ─── Preview (MJPEG server) ──────────────────────────────────────────────
@@ -116,20 +173,12 @@ class UsbCameraPlugin : Plugin() {
     fun startPreview(call: PluginCall) {
         val w   = call.getInt("width")  ?: 640
         val h   = call.getInt("height") ?: 480
-        val fps = call.getInt("fps")    ?: 30
         val lan = call.getBoolean("lanAccessible") ?: false
-        val fmt = when (call.getString("format")?.uppercase()) {
-            "H264" -> UvcCameraDevice.FORMAT_H264
-            "H265" -> UvcCameraDevice.FORMAT_H265
-            "NV12" -> UvcCameraDevice.FORMAT_NV12
-            "YUY2" -> UvcCameraDevice.FORMAT_YUY2
-            else   -> UvcCameraDevice.FORMAT_MJPEG
-        }
 
         mjpeg?.stop()
         mjpeg = MjpegStreamServer(PREVIEW_PORT, lan).also { it.start() }
 
-        uvc?.apply { setResolution(w, h, fps, fmt); startStream() }
+        uvcNative?.let { cam -> activity.runOnUiThread { cam.startPreview(w, h) } }
         easyCap?.startCapture()
 
         val result = JSObject()
@@ -142,7 +191,8 @@ class UsbCameraPlugin : Plugin() {
 
     @PluginMethod
     fun stopPreview(call: PluginCall) {
-        uvc?.stopStream(); easyCap?.stopCapture()
+        uvcNative?.let { cam -> activity.runOnUiThread { cam.stopPreview() } }
+        easyCap?.stopCapture()
         mjpeg?.stop(); mjpeg = null
         call.resolve(JSObject().put("success", true))
     }
@@ -160,9 +210,9 @@ class UsbCameraPlugin : Plugin() {
     @PluginMethod
     fun startRecording(call: PluginCall) {
         if (recording) return call.reject("Already recording")
-        val w   = uvc?.width  ?: 720
-        val h   = uvc?.height ?: 576
-        val fps = uvc?.fps    ?: 25
+        val w   = uvcNative?.width  ?: EasyCapDevice.FRAME_WIDTH
+        val h   = uvcNative?.height ?: EasyCapDevice.FRAME_HEIGHT
+        val fps = 30
         val path = generatePath("mp4", "Videos")
 
         val rec = VideoRecorder(path, w, h, fps)
@@ -202,19 +252,18 @@ class UsbCameraPlugin : Plugin() {
     // ─── Runtime permissions (Android 13+ / API 33+) ─────────────────────────
 
     @PluginMethod
-    fun requestMediaPermissions(call: PluginCall) {
+    fun requestAppPermissions(call: PluginCall) {
+        val aliases = mutableListOf("microphone")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissionForAliases(arrayOf("mediaVideo", "mediaImages"), call, "mediaPermissionCallback")
-        } else {
-            call.resolve(JSObject().put("granted", true))
+            aliases += listOf("notifications", "mediaVideo", "mediaImages")
         }
+        requestPermissionForAliases(aliases.toTypedArray(), call, "appPermissionCallback")
     }
 
     @PermissionCallback
-    private fun mediaPermissionCallback(call: PluginCall) {
-        val granted = getPermissionState("mediaVideo") == com.getcapacitor.PermissionState.GRANTED &&
-                      getPermissionState("mediaImages") == com.getcapacitor.PermissionState.GRANTED
-        call.resolve(JSObject().put("granted", granted))
+    private fun appPermissionCallback(call: PluginCall) {
+        val mic = getPermissionState("microphone") == PermissionState.GRANTED
+        call.resolve(JSObject().put("granted", mic).put("microphone", mic))
     }
 
     // ─── Lifecycle / misc ─────────────────────────────────────────────────────
@@ -230,6 +279,10 @@ class UsbCameraPlugin : Plugin() {
 
     // ─── Internals ─────────────────────────────────────────────────────────────
 
+    private fun onNativeFrame(data: ByteArray, w: Int, h: Int) {
+        onFrame(data, w, h, FrameConverter.FORMAT_NV21)
+    }
+
     private fun onFrame(data: ByteArray, w: Int, h: Int, fmt: Int) {
         val jpeg = FrameConverter.toJpeg(data, w, h, fmt) ?: return
         lastJpeg = jpeg
@@ -241,12 +294,17 @@ class UsbCameraPlugin : Plugin() {
         }
     }
 
+    private fun notifyError(message: String) {
+        notifyListeners("error", JSObject().put("message", message))
+    }
+
     private fun cleanupDevice() {
         recording = false
         recorder?.stop(); recorder = null
         recordingPath = null
         mjpeg?.stop(); mjpeg = null
-        uvc?.release(); uvc = null
+        uvcNative?.let { cam -> activity.runOnUiThread { cam.close() } }
+        uvcNative = null
         easyCap?.release(); easyCap = null
         activeKey = null
         lastJpeg = null

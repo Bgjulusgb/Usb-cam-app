@@ -25,16 +25,29 @@ eine schlanke Web-UI in einem WebView.
 > Cam Link ggf. über einen aktiven USB-Hub betreiben (Signalverstärkung).
 > HEVC braucht Android 5+, AV1 braucht Android 10+.
 
+> 🔴 **Wichtig zu „EasyCap" / analogen Sticks (VHS via Cinch/SCART):**
+> Es gibt zwei völlig verschiedene Kategorien:
+> - **UVC-konforme Sticks** (alle HDMI-Grabber, manche neueren Analog-Sticks):
+>   funktionieren über die native UVC-Bibliothek (libuvc) – Live-Bild, Aufnahme,
+>   Foto.
+> - **Rohe Analog-Bridges** (STK1160, SMI2021/Somagic, EM2860): das sind **keine
+>   UVC-Geräte**. Sie brauchen einen kernelnahen Treiber (unter Linux `stk1160`,
+>   `smi2021`, `em28xx`) und lassen sich auf einem **nicht gerooteten Android**
+>   in der Praxis **nicht** ansteuern – auch nicht mit libuvc. Die App erkennt
+>   und benennt den Chip per VID:PID, kann ihn aber nur „best effort" versuchen.
+>   Für solche Sticks: einen **UVC-/HDMI-Grabber** verwenden oder am PC capturen.
+
 ---
 
 ## Tech Stack (alles Open Source, kostenlos)
 
 ```
-TypeScript + Vite        → Web-UI (kein Framework-Ballast)
-Capacitor 6              → npm-Projekt → native Android-APK
-Android USB Host API     → UVC + Non-UVC Zugriff (Kotlin)
-MediaCodec + MediaMuxer  → H.264/MP4 Aufnahme (ersetzt das eingestellte FFmpegKit)
-Lokaler MJPEG-Server     → Live-Preview im WebView + optionaler LAN-Stream
+TypeScript + Vite         → Web-UI (kein Framework-Ballast)
+Capacitor 7               → npm-Projekt → native Android-APK (Android 16 / API 36)
+UVCAndroid (libusb/libuvc)→ nativer UVC-Zugriff inkl. isochroner USB-Transfers
+Android USB Host API      → Geräteerkennung + analoger EasyCap-Versuch (Kotlin)
+MediaCodec + MediaMuxer   → H.264/MP4 Aufnahme (ersetzt das eingestellte FFmpegKit)
+Lokaler MJPEG-Server      → Live-Preview im WebView + optionaler LAN-Stream
 ```
 
 Es gibt **keine** Abhängigkeit zu FFmpegKit (wurde im April 2025 abgekündigt
@@ -59,7 +72,8 @@ eingebaute `MediaCodec`/`MediaMuxer`.
 │   ├── kotlin/com/usbcam/app/
 │   │   ├── MainActivity.kt
 │   │   ├── UsbCameraPlugin.kt         → @CapacitorPlugin Bridge
-│   │   ├── usb/                        → UsbDeviceManager, Uvc-/EasyCap-Treiber, Profile
+│   │   ├── usb/                        → UsbDeviceManager, UvcNativeCamera (libuvc),
+│   │   │                                 EasyCapDevice (analog best-effort), Profile
 │   │   └── camera/
 │   │       ├── MjpegStreamServer.kt    → Live-Preview-/LAN-Server
 │   │       ├── FrameConverter.kt       → YUY2/MJPEG → JPEG/Bitmap
@@ -82,9 +96,9 @@ Gradle-Wrapper, während unser USB-Code eingespielt wird.
 ## Build: npm-Projekt → APK
 
 ### Voraussetzungen (alle kostenlos)
-- **Node.js 18+** — https://nodejs.org
-- **Android Studio + JDK 17** — https://developer.android.com/studio
-- Android SDK 34, Umgebungsvariable `ANDROID_HOME` gesetzt
+- **Node.js 20+** — https://nodejs.org
+- **Android Studio (Ladybug 2024.2.1+) + JDK 21** — https://developer.android.com/studio
+- Android SDK 36 (Android 16), Umgebungsvariable `ANDROID_HOME` gesetzt
 
 ### Schritte
 
@@ -121,22 +135,35 @@ npm run dev      # Vite Dev-Server; nutzt automatisch den Web-Mock des Plugins
 
 ## Wie die Integration funktioniert
 
-### USB + Non-UVC Erkennung
+### USB-Erkennung & Berechtigungen
 `UsbDeviceManager` lauscht via `BroadcastReceiver` auf
 `USB_DEVICE_ATTACHED/DETACHED`. Beim Einstecken wird die VID/PID gegen
 `DeviceDatabase` (alle EasyCap-Varianten, Supercamera …) geprüft. Trifft kein
 Profil zu, gilt das Gerät als UVC, sobald es ein Interface der Klasse `0x0E`
 hat. `res/xml/device_filter.xml` sorgt dafür, dass Android die App beim
-Einstecken automatisch anbietet und die USB-Berechtigung erfragt.
+Einstecken automatisch anbietet und die USB-Berechtigung erfragt. Beim
+App-Start fordert das Plugin zusätzlich die Laufzeit-Berechtigungen an
+(Mikrofon, Benachrichtigungen & Medien auf Android 13+); die USB-Geräte-
+Berechtigung wird beim Verbinden separat abgefragt.
 
 ### Live-Preview (der „Backend"-Kern)
+**UVC-Geräte** werden über den **nativen UVC-Stack `UVCAndroid`
+(libusb + libuvc)** geöffnet. Nur so lassen sich die **isochronen** USB-
+Transfers lesen, die UVC-Webcams und Capture-Sticks fast immer nutzen – die
+reine Java/Kotlin-USB-Host-API kann das nicht. Die Frames kommen als NV21 per
+Callback (`UvcNativeCamera`), werden zu JPEG gewandelt und in den lokalen
+MJPEG-Server gespeist.
+
 Ein WebView kann keinen rohen USB-Stream zeigen. Deshalb läuft im
 App-Prozess ein **lokaler MJPEG-HTTP-Server** (`MjpegStreamServer`,
-`http://localhost:8080/stream`). Jeder Kamera-Frame wird von
-`FrameConverter` nach JPEG gewandelt und an alle Clients gepusht; die UI zeigt
-ihn einfach in einem `<img>`. Ist „LAN-Stream" in den Einstellungen aktiv,
-bindet der Server auf `0.0.0.0` und ist als
+`http://localhost:8080/stream`). Jeder JPEG-Frame wird an alle Clients
+gepusht; die UI zeigt ihn einfach in einem `<img>`. Ist „LAN-Stream" in den
+Einstellungen aktiv, bindet der Server auf `0.0.0.0` und ist als
 `http://<handy-ip>:8080/stream` im lokalen Netz erreichbar (kein Internet).
+
+**Analoge Non-UVC-Sticks** (`EasyCapDevice`) werden nur „best effort"
+versucht – siehe den roten Hinweis oben. Liefert der Chip kein UVC-Interface,
+bleibt das Bild in der Regel aus.
 
 ### Aufnahme (ohne FFmpeg)
 `VideoRecorder` nutzt `MediaCodec` (H.264-Encoder) + `MediaMuxer` (MP4).
