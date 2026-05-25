@@ -1,3 +1,0 @@
--keep class com.arthenica.ffmpegkit.** { *; }
--keep class com.usbcam.app.** { *; }
--dontwarn com.arthenica.**

@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Capacitor-generated native project (regenerate with `npm run setup:android`)
+android/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.iml
+
+# Logs
+npm-debug.log*
+yarn-error.log*
