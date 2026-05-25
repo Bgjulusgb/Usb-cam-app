@@ -1,12 +1,16 @@
 package com.usbcam.app
 
+import android.Manifest
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.util.Log
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 import com.usbcam.app.camera.FrameConverter
 import com.usbcam.app.camera.MjpegStreamServer
 import com.usbcam.app.camera.VideoRecorder
@@ -23,7 +27,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@CapacitorPlugin(name = "UsbCamera")
+@CapacitorPlugin(
+    name = "UsbCamera",
+    permissions = [
+        Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone"),
+        Permission(strings = [Manifest.permission.READ_MEDIA_VIDEO], alias = "mediaVideo"),
+        Permission(strings = [Manifest.permission.READ_MEDIA_IMAGES], alias = "mediaImages"),
+        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+    ]
+)
 class UsbCameraPlugin : Plugin() {
     private val TAG = "UsbCameraPlugin"
     private val PREVIEW_PORT = 8080
@@ -102,16 +114,16 @@ class UsbCameraPlugin : Plugin() {
 
     @PluginMethod
     fun startPreview(call: PluginCall) {
-        val w = call.getInt("width") ?: 640
-        val h = call.getInt("height") ?: 480
-        val fps = call.getInt("fps") ?: 30
+        val w   = call.getInt("width")  ?: 640
+        val h   = call.getInt("height") ?: 480
+        val fps = call.getInt("fps")    ?: 30
         val lan = call.getBoolean("lanAccessible") ?: false
         val fmt = when (call.getString("format")?.uppercase()) {
             "H264" -> UvcCameraDevice.FORMAT_H264
             "H265" -> UvcCameraDevice.FORMAT_H265
             "NV12" -> UvcCameraDevice.FORMAT_NV12
             "YUY2" -> UvcCameraDevice.FORMAT_YUY2
-            else -> UvcCameraDevice.FORMAT_MJPEG
+            else   -> UvcCameraDevice.FORMAT_MJPEG
         }
 
         mjpeg?.stop()
@@ -148,9 +160,9 @@ class UsbCameraPlugin : Plugin() {
     @PluginMethod
     fun startRecording(call: PluginCall) {
         if (recording) return call.reject("Already recording")
-        val w = uvc?.width ?: 720
-        val h = uvc?.height ?: 576
-        val fps = uvc?.fps ?: 25
+        val w   = uvc?.width  ?: 720
+        val h   = uvc?.height ?: 576
+        val fps = uvc?.fps    ?: 25
         val path = generatePath("mp4", "Videos")
 
         val rec = VideoRecorder(path, w, h, fps)
@@ -185,6 +197,24 @@ class UsbCameraPlugin : Plugin() {
         } catch (e: Exception) {
             call.reject("Photo capture failed: ${e.message}")
         }
+    }
+
+    // ─── Runtime permissions (Android 13+ / API 33+) ─────────────────────────
+
+    @PluginMethod
+    fun requestMediaPermissions(call: PluginCall) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissionForAliases(arrayOf("mediaVideo", "mediaImages"), call, "mediaPermissionCallback")
+        } else {
+            call.resolve(JSObject().put("granted", true))
+        }
+    }
+
+    @PermissionCallback
+    private fun mediaPermissionCallback(call: PluginCall) {
+        val granted = getPermissionState("mediaVideo") == com.getcapacitor.PermissionState.GRANTED &&
+                      getPermissionState("mediaImages") == com.getcapacitor.PermissionState.GRANTED
+        call.resolve(JSObject().put("granted", granted))
     }
 
     // ─── Lifecycle / misc ─────────────────────────────────────────────────────
